@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.47](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.46...quota-axi-v0.1.47) (2026-09-17)
+
+
+### Bug Fixes
+
+* **lib:** pair the proxy dispatcher with its own undici fetch ([#198](https://github.com/kunchenguid/quota-axi/issues/198)) ([9e7163d](https://github.com/kunchenguid/quota-axi/commit/9e7163dcf15e9bceb16213ff5dacfadd0a6823a9))
+
 ## [0.1.46](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.45...quota-axi-v0.1.46) (2026-09-17)
 
 
