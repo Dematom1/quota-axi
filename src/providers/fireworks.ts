@@ -58,7 +58,7 @@ type FireworksSource = (typeof FIREWORKS_SOURCE_ORDER)[number];
 /**
  * `auth.ini` also holds SSO material (`id_token`, `refresh_token`,
  * `client_id`, `cognito_domain`, `issuer_url`). Only these two keys are ever
- * read out of it, so nothing else is held in memory at all.
+ * retained in the parsed result; the raw file text is temporary.
  */
 const AUTH_INI_KEYS = ["api_key", "account_id"] as const;
 
@@ -409,7 +409,7 @@ function invalidAuthIni(path: string, error: string): FireworksResolution {
 /**
  * `auth.ini` is written as bare `key = value` lines, and some tooling wraps
  * them in a section header. A narrow walker reads both shapes and keeps only
- * the whitelisted keys, so the SSO tokens in the same file are never held.
+ * the whitelisted keys, discarding SSO fields from the parsed result.
  * The first occurrence of a key wins, matching the vendor SDK's own
  * first-match read.
  *
@@ -473,6 +473,7 @@ async function readQuotas(
       credential.apiKey,
       dependencies,
     );
+    // The 200-entry page should cover real accounts; reject overflow as a safety net.
     if (stringValue(objectValue(payload)?.nextPageToken))
       throw new Error("fireworks_quota_incomplete");
     return { kind: "quota", result: normalizeFireworksQuotas(payload) };
@@ -504,6 +505,7 @@ async function discoverAccountId(
     credential.apiKey,
     dependencies,
   );
+  // pageSize is a maximum, not proof that the listing is complete.
   const root = objectValue(payload);
   const listed = root?.accounts;
   if (
