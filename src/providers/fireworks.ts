@@ -130,7 +130,6 @@ export const fireworksAdapter = createFireworksAdapter();
 async function fetchQuota(dependencies: Dependencies): Promise<ProviderQuota> {
   const attempts: SourceAttempt[] = [];
   let failure: FireworksFailure | undefined;
-  let liveWithoutQuota = false;
 
   for (const source of FIREWORKS_SOURCE_ORDER) {
     const resolution = dependencies.resolve(source);
@@ -167,13 +166,23 @@ async function fetchQuota(dependencies: Dependencies): Promise<ProviderQuota> {
     if (selection.outcome === "live_no_quota") {
       // The key was accepted and the quota operation refused: a permission
       // boundary, never a sign-out.
-      liveWithoutQuota = true;
       attempts[attempts.length - 1] = {
         source,
         status: "failed",
         error: FORBIDDEN_ERROR,
       };
-      continue;
+      return withAuthStatus(
+        failedProvider({
+          provider: "fireworks",
+          label: LABEL,
+          status: "unavailable",
+          error: FORBIDDEN_ERROR,
+          source: "api",
+          sourcesTried: sourceNames(attempts),
+          attempts,
+        }),
+        "usable",
+      );
     }
 
     if (selection.outcome === "all_rejected") {
@@ -204,21 +213,6 @@ async function fetchQuota(dependencies: Dependencies): Promise<ProviderQuota> {
       sourcesTried: sourceNames(attempts),
       attempts,
     });
-  }
-
-  if (liveWithoutQuota) {
-    return withAuthStatus(
-      failedProvider({
-        provider: "fireworks",
-        label: LABEL,
-        status: "unavailable",
-        error: FORBIDDEN_ERROR,
-        source: "api",
-        sourcesTried: sourceNames(attempts),
-        attempts,
-      }),
-      "usable",
-    );
   }
 
   return failedProvider({

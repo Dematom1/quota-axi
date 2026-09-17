@@ -568,19 +568,32 @@ describe("Fireworks credential selection and failures", () => {
     expect(report.windows).toEqual([]);
   });
 
-  it("prefers a sibling that answers over a permission-refused source", async () => {
+  it("stops at a permission-refused source without consulting another account", async () => {
     process.env.FIREWORKS_API_KEY = ENV_KEY;
     process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
-    writeAuthIni(`api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n`);
+    writeAuthIni(`api_key = ${INI_KEY}\naccount_id = another-account\n`);
+    const resolve = vi.fn(resolveFireworksCredential);
     const request = vi.fn(async (_input: unknown, init?: RequestInit) =>
       new Headers(init?.headers).get("authorization") === `Bearer ${INI_KEY}`
         ? jsonResponse(quotaList())
         : jsonResponse({}, 403),
     );
 
-    const report = await adapterWith(request).fetchQuota(OPTIONS);
+    const report = await adapterWith(request, resolve).fetchQuota(OPTIONS);
 
-    expect(report.state.status).toBe("fresh");
+    expect(resolve.mock.calls).toEqual([["env"]]);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(String(request.mock.calls[0]![0])).toBe(QUOTAS_URL);
+    expect(report.state).toMatchObject({
+      status: "unavailable",
+      error: "fireworks_quota_forbidden",
+      authStatus: "usable",
+      sourcesTried: ["env"],
+    });
+    expect(report.windows).toEqual([]);
+    expect(report.attempts).toEqual([
+      { source: "env", status: "failed", error: "fireworks_quota_forbidden" },
+    ]);
   });
 
   it("reports a rate limit with the vendor's retry instant", async () => {
