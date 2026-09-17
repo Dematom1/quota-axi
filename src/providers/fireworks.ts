@@ -602,7 +602,8 @@ export function normalizeFireworksQuotas(
   raw: unknown,
 ): NormalizedFireworksQuotas {
   const root = objectValue(raw);
-  const quotas = root?.quotas;
+  if (!root) throw new Error("schema_invalid");
+  const quotas = root.quotas;
   if (quotas === undefined || quotas === null)
     return { windows: [], untrustedWindowIds: [] };
   if (!Array.isArray(quotas)) throw new Error("schema_invalid");

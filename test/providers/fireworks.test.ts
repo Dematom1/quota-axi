@@ -283,6 +283,13 @@ describe("Fireworks quota normalization", () => {
     });
   });
 
+  it.each([null, [], "invalid", 7, true].map((payload) => ({ payload })))(
+    "rejects a non-object quota root: $payload",
+    ({ payload }) => {
+      expect(() => normalizeFireworksQuotas(payload)).toThrow("schema_invalid");
+    },
+  );
+
   it("rejects a payload whose quota list is not a list", () => {
     expect(() => normalizeFireworksQuotas({ quotas: { a: 1 } })).toThrow(
       "schema_invalid",
@@ -429,6 +436,27 @@ describe("Fireworks quota reads", () => {
     expect(report.windows).toEqual([]);
   });
 
+  it.each([null, [], "invalid", 7, true].map((payload) => ({ payload })))(
+    "reports a non-object quota response as a failed read: $payload",
+    async ({ payload }) => {
+      process.env.FIREWORKS_API_KEY = ENV_KEY;
+      process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+      writeAuthIni(`api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n`);
+      const request = vi.fn(async () => jsonResponse(payload));
+
+      const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(report.state).toMatchObject({
+        status: "error",
+        error: "schema_invalid",
+        sourcesTried: ["env"],
+      });
+      expect(report.state.authStatus).toBeUndefined();
+      expect(report.windows).toEqual([]);
+    },
+  );
+
   it("names untrusted quotas on the fresh reading", async () => {
     process.env.FIREWORKS_API_KEY = ENV_KEY;
     process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
@@ -447,17 +475,20 @@ describe("Fireworks quota reads", () => {
     expect(report.windows.map((window) => window.id)).toEqual(["quota:good"]);
   });
 
-  it("returns a fresh reading with no windows when the account declares no quotas", async () => {
-    process.env.FIREWORKS_API_KEY = ENV_KEY;
-    process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
-    const request = vi.fn(async () => jsonResponse({ quotas: [] }));
+  it.each([{}, { quotas: [] }])(
+    "returns a fresh empty reading for %j",
+    async (payload) => {
+      process.env.FIREWORKS_API_KEY = ENV_KEY;
+      process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+      const request = vi.fn(async () => jsonResponse(payload));
 
-    const report = await adapterWith(request).fetchQuota(OPTIONS);
+      const report = await adapterWith(request).fetchQuota(OPTIONS);
 
-    expect(report.state.status).toBe("fresh");
-    expect(report.windows).toEqual([]);
-    expect(report.state.untrustedWindowIds).toBeUndefined();
-  });
+      expect(report.state.status).toBe("fresh");
+      expect(report.windows).toEqual([]);
+      expect(report.state.untrustedWindowIds).toBeUndefined();
+    },
+  );
 });
 
 describe("Fireworks credential selection and failures", () => {
