@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -358,6 +358,77 @@ describe("Fireworks quota reads", () => {
     }
   });
 
+  it.each([
+    { accounts: [{ name: "accounts/a" }], nextPageToken: "more" },
+    { accounts: [{ name: "accounts/a" }], totalSize: 2 },
+    { accounts: [{ name: "accounts/a" }], totalSize: "2" },
+    { accounts: [{ name: "accounts/a" }], totalSize: "invalid" },
+    { accounts: [{ name: "accounts/a" }], totalSize: 0 },
+    { accounts: [{ name: "accounts/a" }], totalSize: null },
+    { accounts: [{ name: "accounts/a" }, {}] },
+    { accounts: [{ name: "accounts/a" }, { name: "accounts/../b" }] },
+    { accounts: [{ name: "accounts/a" }, null] },
+    { accounts: {} },
+  ])(
+    "rejects an incomplete or invalid account listing: %j",
+    async (payload) => {
+      process.env.FIREWORKS_API_KEY = ENV_KEY;
+      writeAuthIni(`api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n`);
+      const request = vi.fn(async () => jsonResponse(payload));
+
+      const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(report.state).toMatchObject({
+        status: "error",
+        error: "fireworks_account_unresolved",
+        sourcesTried: ["env"],
+      });
+      expect(report.windows).toEqual([]);
+    },
+  );
+
+  it.each([1, "1", undefined])(
+    "accepts a complete single-account listing with totalSize %s",
+    async (totalSize) => {
+      process.env.FIREWORKS_API_KEY = ENV_KEY;
+      const request = vi.fn(async (input: unknown) =>
+        String(input) === ACCOUNTS_URL
+          ? jsonResponse({
+              accounts: [{ name: `accounts/${ACCOUNT}` }],
+              nextPageToken: "",
+              totalSize,
+            })
+          : jsonResponse(quotaList()),
+      );
+
+      const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+      expect(report.state.status).toBe("fresh");
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("reports paginated quotas as incomplete without switching credentials", async () => {
+    process.env.FIREWORKS_API_KEY = ENV_KEY;
+    process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+    writeAuthIni(`api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n`);
+    const request = vi.fn(async () =>
+      jsonResponse({ ...quotaList(), nextPageToken: "more" }),
+    );
+
+    const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(report.state).toMatchObject({
+      status: "error",
+      error: "fireworks_quota_incomplete",
+      sourcesTried: ["env"],
+    });
+    expect(report.state.authStatus).toBeUndefined();
+    expect(report.windows).toEqual([]);
+  });
+
   it("names untrusted quotas on the fresh reading", async () => {
     process.env.FIREWORKS_API_KEY = ENV_KEY;
     process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
@@ -577,6 +648,58 @@ describe("Fireworks credential selection and failures", () => {
         error: "credentials_missing",
       },
     ]);
+  });
+
+  it.each(["unreadable", "oversized"])(
+    "preserves an %s auth.ini as an indeterminate failure",
+    async (kind) => {
+      const path = writeAuthIni(
+        kind === "oversized" ? "x".repeat(65_537) : `api_key = ${INI_KEY}\n`,
+      );
+      if (kind === "unreadable") chmodSync(path, 0o000);
+      const request = vi.fn(async () => jsonResponse(quotaList()));
+      try {
+        const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+        expect(request).not.toHaveBeenCalled();
+        expect(report.state).toMatchObject({
+          status: "error",
+          error: "credential_resolution_failed",
+        });
+        expect(report.windows).toEqual([]);
+      } finally {
+        chmodSync(path, 0o600);
+      }
+    },
+  );
+
+  it("preserves a local read failure after a rejected environment key", async () => {
+    process.env.FIREWORKS_API_KEY = ENV_KEY;
+    process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+    writeAuthIni("x".repeat(65_537));
+    const request = vi.fn(async () => jsonResponse({}, 401));
+
+    const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(report.state).toMatchObject({
+      status: "error",
+      error: "credential_resolution_failed",
+    });
+  });
+
+  it("keeps sign-in required for a rejected key and an absent store", async () => {
+    process.env.FIREWORKS_API_KEY = ENV_KEY;
+    process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+    const request = vi.fn(async () => jsonResponse({}, 401));
+
+    const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(report.state).toMatchObject({
+      status: "auth_required",
+      error: "provider_auth_rejected",
+    });
   });
 
   it("keeps a present but unusable store visible as a credential that exists", async () => {

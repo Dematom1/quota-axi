@@ -136,6 +136,8 @@ async function fetchQuota(dependencies: Dependencies): Promise<ProviderQuota> {
     const resolution = dependencies.resolve(source);
     if (resolution.status !== "resolved") {
       attempts.push(unavailableAttempt(source, resolution.status));
+      if (resolution.status === "read_error")
+        failure = { error: "credential_resolution_failed" };
       continue;
     }
 
@@ -364,7 +366,15 @@ export function resolveFireworksAuthIni(
     };
   }
   if (text.length > AUTH_INI_MAX_BYTES)
-    return invalidAuthIni(path, "file_too_large");
+    return {
+      status: "read_error",
+      report: {
+        source: AUTH_INI_SOURCE,
+        path,
+        status: "error",
+        error: "file_too_large",
+      },
+    };
 
   const entries = parseFireworksAuthIni(text);
   const declared = entries.api_key;
@@ -469,6 +479,8 @@ async function readQuotas(
       credential.apiKey,
       dependencies,
     );
+    if (stringValue(objectValue(payload)?.nextPageToken))
+      throw new Error("fireworks_quota_incomplete");
     return { kind: "quota", result: normalizeFireworksQuotas(payload) };
   } catch (error) {
     if (error instanceof AuthRejected)
@@ -498,16 +510,20 @@ async function discoverAccountId(
     credential.apiKey,
     dependencies,
   );
-  const listed = objectValue(payload)?.accounts;
-  const names = Array.isArray(listed)
-    ? listed
-        .map((entry) =>
-          accountIdFromResourceName(stringValue(objectValue(entry)?.name)),
-        )
-        .filter((name): name is string => name !== undefined)
-    : [];
+  const root = objectValue(payload);
+  const listed = root?.accounts;
+  if (
+    !Array.isArray(listed) ||
+    stringValue(root?.nextPageToken) ||
+    (root?.totalSize !== undefined && numberValue(root.totalSize) !== 1)
+  )
+    throw new Error(ACCOUNT_UNRESOLVED_ERROR);
+  const names = listed.map((entry) =>
+    accountIdFromResourceName(stringValue(objectValue(entry)?.name)),
+  );
   const unique = [...new Set(names)];
-  if (unique.length !== 1) throw new Error(ACCOUNT_UNRESOLVED_ERROR);
+  if (names.includes(undefined) || unique.length !== 1)
+    throw new Error(ACCOUNT_UNRESOLVED_ERROR);
   return unique[0]!;
 }
 
