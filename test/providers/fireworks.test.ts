@@ -87,7 +87,9 @@ type ProviderFetch = (
 
 function adapterWith(
   fetchImplementation: ProviderFetch,
-  resolve?: (source: "env" | "fireworks:auth.ini") => FireworksResolution,
+  resolve?: (
+    source: "env" | "fireworks:auth.ini",
+  ) => Promise<FireworksResolution>,
 ) {
   return createFireworksAdapter({
     fetch: fetchImplementation,
@@ -97,40 +99,40 @@ function adapterWith(
 }
 
 describe("Fireworks credential discovery", () => {
-  it("prefers the environment key and pairs it with the environment account", () => {
+  it("prefers the environment key and pairs it with the environment account", async () => {
     process.env.FIREWORKS_API_KEY = ENV_KEY;
     process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
 
-    expect(resolveFireworksCredential("env")).toMatchObject({
+    expect(await resolveFireworksCredential("env")).toMatchObject({
       status: "resolved",
       credential: { apiKey: ENV_KEY, accountId: ACCOUNT },
       report: { source: "env", status: "available" },
     });
   });
 
-  it("treats a blank environment key as absence, not as a broken credential", () => {
+  it("treats a blank environment key as absence, not as a broken credential", async () => {
     process.env.FIREWORKS_API_KEY = "   ";
 
-    const resolution = resolveFireworksCredential("env");
+    const resolution = await resolveFireworksCredential("env");
 
     expect(resolution.status).toBe("absent");
     expect(resolution.report.credentialPresent).toBeUndefined();
   });
 
-  it("refuses an environment key that is a reference rather than a literal secret", () => {
+  it("refuses an environment key that is a reference rather than a literal secret", async () => {
     process.env.FIREWORKS_API_KEY = "$SOME_OTHER_VARIABLE";
 
-    expect(resolveFireworksCredential("env")).toMatchObject({
+    expect(await resolveFireworksCredential("env")).toMatchObject({
       status: "structurally_invalid",
       report: { status: "invalid", credentialPresent: true },
     });
   });
 
-  it("refuses an account id that is not a bare path segment", () => {
+  it("refuses an account id that is not a bare path segment", async () => {
     process.env.FIREWORKS_API_KEY = ENV_KEY;
     process.env.FIREWORKS_ACCOUNT_ID = "../../v1/accounts/other";
 
-    expect(resolveFireworksCredential("env")).toMatchObject({
+    expect(await resolveFireworksCredential("env")).toMatchObject({
       status: "structurally_invalid",
       report: { error: "account_id_invalid" },
     });
@@ -154,37 +156,93 @@ describe("Fireworks credential discovery", () => {
     expect(Object.keys(parsed)).toEqual(["api_key", "account_id"]);
   });
 
-  it("resolves an auth.ini login and reports its path", () => {
+  it("resolves an auth.ini login and reports its path", async () => {
     const path = writeAuthIni(
       `api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\nrefresh_token = must-not-be-read\n`,
     );
 
-    expect(resolveFireworksAuthIni()).toMatchObject({
+    expect(await resolveFireworksAuthIni()).toMatchObject({
       status: "resolved",
       credential: { apiKey: INI_KEY, accountId: ACCOUNT },
       report: { source: "fireworks:auth.ini", path, status: "available" },
     });
   });
 
-  it("reports an auth.ini with no api_key as absent and a broken one as present", () => {
+  it("reports an auth.ini with no api_key as absent and a broken one as present", async () => {
     writeAuthIni(`account_id = ${ACCOUNT}\n`);
-    expect(resolveFireworksAuthIni().status).toBe("absent");
+    expect((await resolveFireworksAuthIni()).status).toBe("absent");
 
     writeAuthIni("api_key = \naccount_id = x\n");
-    expect(resolveFireworksAuthIni().status).toBe("absent");
+    expect((await resolveFireworksAuthIni()).status).toBe("absent");
 
     writeAuthIni("api_key = $FROM_SOMEWHERE_ELSE\n");
-    expect(resolveFireworksAuthIni()).toMatchObject({
+    expect(await resolveFireworksAuthIni()).toMatchObject({
       status: "structurally_invalid",
       report: { credentialPresent: true },
     });
   });
 
-  it("reports an absent auth.ini as missing", () => {
-    expect(resolveFireworksAuthIni()).toMatchObject({
+  it("reports an absent auth.ini as missing", async () => {
+    expect(await resolveFireworksAuthIni()).toMatchObject({
       status: "absent",
       report: { status: "missing" },
     });
+  });
+
+  it.each(["oversized multibyte", "invalid UTF-8"])(
+    "rejects an %s auth.ini before any quota request",
+    async (kind) => {
+      const prefix = `api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n#`;
+      const contents =
+        kind === "oversized multibyte"
+          ? Buffer.from(prefix + "é".repeat(32_768))
+          : Buffer.concat([Buffer.from(prefix), Buffer.from([0xc3])]);
+      if (kind === "oversized multibyte") {
+        expect(contents.byteLength).toBeGreaterThan(65_536);
+        expect(contents.toString("utf8").length).toBeLessThan(65_536);
+      }
+      const path = writeAuthIni("");
+      writeFileSync(path, contents);
+      const request = vi.fn(async () => jsonResponse(quotaList()));
+
+      const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+      expect(request).not.toHaveBeenCalled();
+      expect(report.state).toMatchObject({
+        status: "error",
+        error: "credential_resolution_failed",
+      });
+      expect(await resolveFireworksAuthIni(path)).toMatchObject({
+        status: "read_error",
+        report: {
+          status: "error",
+          error:
+            kind === "oversized multibyte"
+              ? "file_too_large"
+              : "file_read_error",
+        },
+      });
+    },
+  );
+
+  it("resolves a multibyte auth.ini just below the byte cap", async () => {
+    const prefix = `api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n#`;
+    const remaining = 65_535 - Buffer.byteLength(prefix);
+    const text =
+      prefix +
+      "é".repeat(Math.floor(remaining / 2)) +
+      "x".repeat(remaining % 2);
+    expect(Buffer.byteLength(text)).toBe(65_535);
+    const path = writeAuthIni(text);
+
+    expect(await resolveFireworksAuthIni(path)).toMatchObject({
+      status: "resolved",
+      credential: { apiKey: INI_KEY, accountId: ACCOUNT },
+    });
+    const request = vi.fn(async () => jsonResponse(quotaList()));
+    const report = await adapterWith(request).fetchQuota(OPTIONS);
+    expect(report.state.status).toBe("fresh");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("honours the auth.ini path override and otherwise uses the vendor location", () => {

@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readBoundedFile } from "../lib/fs.js";
 import { providerFetch } from "../lib/http.js";
 import { usableLiteralSecret } from "../lib/secret.js";
 import {
@@ -94,7 +94,7 @@ export type NormalizedFireworksQuotas = {
 };
 
 type Dependencies = {
-  resolve(source: FireworksSource): FireworksResolution;
+  resolve(source: FireworksSource): Promise<FireworksResolution>;
   fetch: typeof providerFetch;
   now: () => string;
   timeoutMs: number;
@@ -132,7 +132,7 @@ async function fetchQuota(dependencies: Dependencies): Promise<ProviderQuota> {
   let failure: FireworksFailure | undefined;
 
   for (const source of FIREWORKS_SOURCE_ORDER) {
-    const resolution = dependencies.resolve(source);
+    const resolution = await dependencies.resolve(source);
     if (resolution.status !== "resolved") {
       attempts.push(unavailableAttempt(source, resolution.status));
       if (resolution.status === "read_error")
@@ -231,8 +231,10 @@ async function inspectAuth(
 ): Promise<AuthProviderReport> {
   return {
     provider: "fireworks",
-    sources: FIREWORKS_SOURCE_ORDER.map(
-      (source) => dependencies.resolve(source).report,
+    sources: await Promise.all(
+      FIREWORKS_SOURCE_ORDER.map(
+        async (source) => (await dependencies.resolve(source)).report,
+      ),
     ),
   };
 }
@@ -292,9 +294,9 @@ function withAuthStatus(
 // Local resolution
 // ---------------------------------------------------------------------------
 
-export function resolveFireworksCredential(
+export async function resolveFireworksCredential(
   source: FireworksSource,
-): FireworksResolution {
+): Promise<FireworksResolution> {
   return source === ENV_SOURCE ? resolveFromEnv() : resolveFireworksAuthIni();
 }
 
@@ -337,12 +339,23 @@ function envReport(
   };
 }
 
-export function resolveFireworksAuthIni(
+export async function resolveFireworksAuthIni(
   path = fireworksAuthIniPath(),
-): FireworksResolution {
+): Promise<FireworksResolution> {
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    const contents = await readBoundedFile(path, AUTH_INI_MAX_BYTES);
+    if (contents.byteLength > AUTH_INI_MAX_BYTES)
+      return {
+        status: "read_error",
+        report: {
+          source: AUTH_INI_SOURCE,
+          path,
+          status: "error",
+          error: "file_too_large",
+        },
+      };
+    text = new TextDecoder("utf-8", { fatal: true }).decode(contents);
   } catch (error) {
     if (errorCode(error) === "ENOENT")
       return {
@@ -359,17 +372,6 @@ export function resolveFireworksAuthIni(
       },
     };
   }
-  if (text.length > AUTH_INI_MAX_BYTES)
-    return {
-      status: "read_error",
-      report: {
-        source: AUTH_INI_SOURCE,
-        path,
-        status: "error",
-        error: "file_too_large",
-      },
-    };
-
   const entries = parseFireworksAuthIni(text);
   const declared = entries.api_key;
   // A blank value selects nothing, exactly as a blank environment key does.
