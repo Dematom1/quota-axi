@@ -46,10 +46,16 @@ const AUTH_INI_SOURCE = "fireworks:auth.ini";
  * Fireworks' credential stores in ownership-stability order.
  *
  * `FIREWORKS_API_KEY` wins because the vendor's own SDKs resolve it before
- * opening any store, so it names the key a live session uses; it has no expiry
- * and no refresh token, so it is never rotated or persisted. `auth.ini` is the
+ * opening any store, so it names the key a live session uses. `auth.ini` is the
  * store `firectl set-api-key`/`firectl signin` writes and is consulted only
  * when the environment holds nothing usable.
+ *
+ * A Fireworks key may carry a vendor-side `expireTime` chosen when it was
+ * created, but neither store records it and quota-axi never calls the
+ * key-management endpoints that would reveal it, so there is no local expiry to
+ * order candidates by and none is ever inferred. With no refresh token and no
+ * vendor-owned rotation command either, an expired key is only ever established
+ * by the quota endpoint's own HTTP 401.
  */
 const FIREWORKS_SOURCE_ORDER = [ENV_SOURCE, AUTH_INI_SOURCE] as const;
 
@@ -475,9 +481,7 @@ async function readQuotas(
       credential.apiKey,
       dependencies,
     );
-    // The 200-entry page should cover real accounts; reject overflow as a safety net.
-    if (stringValue(objectValue(payload)?.nextPageToken))
-      throw new Error("fireworks_quota_incomplete");
+    rejectIncompleteQuotaPage(payload);
     return { kind: "quota", result: normalizeFireworksQuotas(payload) };
   } catch (error) {
     if (error instanceof AuthRejected)
@@ -489,6 +493,31 @@ async function readQuotas(
       ...(error instanceof RateLimited ? { retryAfter: error.retryAfter } : {}),
     };
   }
+}
+
+/**
+ * A quota list is usable only when it is provably whole. `nextPageToken` names
+ * a further page directly, and a declared `totalSize` can exceed the rows this
+ * page actually carries even when no token is present, so both are checked and
+ * a total that cannot be read at all counts as unproven. Publishing a partial
+ * list would under-report the account's quotas with nothing in the output to
+ * say so, because a short list is indistinguishable from a complete one.
+ *
+ * The 200-entry page is expected to cover any real account, so this is a
+ * safety net rather than a normal path.
+ *
+ * @param payload decoded `ListQuotas` response
+ */
+function rejectIncompleteQuotaPage(payload: unknown): void {
+  // A non-object root is `normalizeFireworksQuotas`'s schema_invalid to raise.
+  const root = objectValue(payload);
+  if (!root) return;
+  if (stringValue(root.nextPageToken)) throw new Error(QUOTA_INCOMPLETE_ERROR);
+  if (root.totalSize === undefined || root.totalSize === null) return;
+  const declared = numberValue(root.totalSize);
+  const returned = Array.isArray(root.quotas) ? root.quotas.length : 0;
+  if (declared === undefined || declared > returned)
+    throw new Error(QUOTA_INCOMPLETE_ERROR);
 }
 
 /**
@@ -666,6 +695,7 @@ function accountIdFromResourceName(
 const AUTH_REJECTED_ERROR = "provider_auth_rejected";
 const FORBIDDEN_ERROR = "fireworks_quota_forbidden";
 const ACCOUNT_UNRESOLVED_ERROR = "fireworks_account_unresolved";
+const QUOTA_INCOMPLETE_ERROR = "fireworks_quota_incomplete";
 
 /** Failures `requestJson` itself raises; anything else is transport trouble. */
 const KNOWN_REQUEST_ERRORS = new Set([

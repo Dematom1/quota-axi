@@ -494,6 +494,61 @@ describe("Fireworks quota reads", () => {
     expect(report.windows).toEqual([]);
   });
 
+  it.each([
+    [
+      "a declared total larger than the rows returned",
+      { ...quotaList(), totalSize: 5 },
+    ],
+    [
+      "a declared total that cannot be read as a number",
+      { ...quotaList(), totalSize: "many" },
+    ],
+    ["a declared total beside an empty page", { quotas: [], totalSize: 3 }],
+  ])(
+    // `nextPageToken` is absent in every case here: a short page is
+    // indistinguishable from a complete one once it is published, so an
+    // unprovable total has to fail closed on its own.
+    "reports %s as incomplete even with no continuation token",
+    async (_label, payload) => {
+      process.env.FIREWORKS_API_KEY = ENV_KEY;
+      process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+      writeAuthIni(`api_key = ${INI_KEY}\naccount_id = ${ACCOUNT}\n`);
+      const request = vi.fn(async () => jsonResponse(payload));
+
+      const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(report.state).toMatchObject({
+        status: "error",
+        error: "fireworks_quota_incomplete",
+        sourcesTried: ["env"],
+      });
+      expect(report.windows).toEqual([]);
+    },
+  );
+
+  it.each([
+    [
+      "a declared total matching the rows returned",
+      { ...quotaList(), totalSize: 2 },
+    ],
+    [
+      "a declared total below the rows returned",
+      { ...quotaList(), totalSize: 1 },
+    ],
+    ["an empty page declaring no rows", { quotas: [], totalSize: 0 }],
+    ["no declared total at all", { quotas: quotaList().quotas }],
+  ])("accepts a quota list proven whole by %s", async (_label, payload) => {
+    process.env.FIREWORKS_API_KEY = ENV_KEY;
+    process.env.FIREWORKS_ACCOUNT_ID = ACCOUNT;
+    const request = vi.fn(async () => jsonResponse(payload));
+
+    const report = await adapterWith(request).fetchQuota(OPTIONS);
+
+    expect(report.state.status).toBe("fresh");
+    expect(report.state.error).toBeUndefined();
+  });
+
   it.each([null, [], "invalid", 7, true].map((payload) => ({ payload })))(
     "reports a non-object quota response as a failed read: $payload",
     async ({ payload }) => {
