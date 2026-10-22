@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.66](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.65...quota-axi-v0.1.66) (2026-10-22)
+
+
+### Bug Fixes
+
+* **providers:** report Gemini 4 Argon under its own Antigravity window id ([#345](https://github.com/kunchenguid/quota-axi/issues/345)) ([9bad9f3](https://github.com/kunchenguid/quota-axi/commit/9bad9f3593f02ca05cbb015e34db7e68e9650190))
+
 ## [0.1.65](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.64...quota-axi-v0.1.65) (2026-10-20)
 
 
