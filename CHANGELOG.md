@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.68](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.67...quota-axi-v0.1.68) (2026-10-26)
+
+
+### Features
+
+* **providers:** read Copilot quota for GitHub Enterprise Cloud (ghe.com) hosts ([#358](https://github.com/kunchenguid/quota-axi/issues/358)) ([91dc7dd](https://github.com/kunchenguid/quota-axi/commit/91dc7dd5007eb3292a6c8b622595460830d5cb85))
+
 ## [0.1.67](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.66...quota-axi-v0.1.67) (2026-10-24)
 
 
