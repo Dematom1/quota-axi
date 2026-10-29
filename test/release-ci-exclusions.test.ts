@@ -405,7 +405,7 @@ describe("release-please CI exclusions", () => {
         .filter((w) => !w.backsGateCheck)
         .map((w) => w.name)
         .sort(),
-    ).toEqual(["ci.yml", "guard-generated-files.yml"]);
+    ).toEqual(["ci.yml", "guard-generated-files.yml", "pr-title.yml"]);
   });
 
   it("every non-gate pull_request workflow ignores the full release-output set", () => {
