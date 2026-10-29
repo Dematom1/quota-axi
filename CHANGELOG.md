@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.69](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.68...quota-axi-v0.1.69) (2026-10-29)
+
+
+### Bug Fixes
+
+* prevent stale Z.AI quota reuse after key rotation ([#361](https://github.com/kunchenguid/quota-axi/issues/361)) ([e56df71](https://github.com/kunchenguid/quota-axi/commit/e56df71f777c9e5824aa9379f48d0941ce44595d))
+
 ## [0.1.68](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.67...quota-axi-v0.1.68) (2026-10-26)
 
 
