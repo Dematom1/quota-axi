@@ -18,6 +18,7 @@ import {
   readCachedDevinProvider,
   readCachedMiniMaxProvider,
   readCachedProvider,
+  readCachedZaiProvider,
   readReusableProviders,
   retireCodexAccount,
   stampClaudeReadingContext,
@@ -43,6 +44,10 @@ import {
   publishDevinReadingContextId,
 } from "../src/providers/devin-cache-context.js";
 import { publishMiniMaxReadingContextId } from "../src/providers/minimax-cache-context.js";
+import {
+  stampZaiReadingContext,
+  zaiCacheContextId,
+} from "../src/providers/zai-cache-context.js";
 import type { ProviderId, ProviderQuota } from "../src/types.js";
 
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
@@ -65,6 +70,39 @@ afterEach(() => {
 });
 
 describe("quota cache", () => {
+  it("keeps each Z.AI reading's key identity through copies and later readings", () => {
+    useTempCache();
+    const firstContext = zaiCacheContextId("dummy-zai-account-a");
+    const secondContext = zaiCacheContextId("dummy-zai-account-b");
+    const first = stampZaiReadingContext(quota("zai", 42), firstContext);
+    const second = stampZaiReadingContext(quota("zai", 80), secondContext);
+    writeCachedProviders([{ ...first }]);
+    expect(readCachedZaiProvider(firstContext)?.windows[0]?.percentUsed).toBe(
+      42,
+    );
+    expect(readCachedZaiProvider(secondContext)).toBeUndefined();
+    writeCachedProviders([second]);
+    expect(readCachedZaiProvider(firstContext)).toBeUndefined();
+    expect(readCachedZaiProvider(secondContext)?.windows[0]?.percentUsed).toBe(
+      80,
+    );
+    const serialized = readFileSync(cacheFilePath(), "utf8");
+    expect(serialized).not.toContain("dummy-zai-account-a");
+    expect(serialized).not.toContain("dummy-zai-account-b");
+  });
+
+  it("neither writes nor clears Z.AI quota without a reading identity", () => {
+    useTempCache();
+    const context = zaiCacheContextId("dummy-zai-account-a");
+    writeCachedProviders([stampZaiReadingContext(quota("zai", 42), context)]);
+    const before = readFileSync(cacheFilePath(), "utf8");
+    writeCachedProviders([quota("zai", 80)]);
+    const empty = quota("zai", 0);
+    empty.windows = [];
+    writeCachedProviders([empty]);
+    expect(readFileSync(cacheFilePath(), "utf8")).toBe(before);
+  });
+
   it("serves Codex stale quota only for a matching stored account", () => {
     useTempCache();
     const snapshot = quota("codex", 42);

@@ -7,7 +7,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeCachedProviders } from "../../src/cache.js";
+import { cacheFilePath } from "../../src/lib/fs.js";
 import {
   createOpencodeAuthCredentialSource,
   createPiAuthCredentialSource,
@@ -795,7 +797,8 @@ describe("Z.AI credential discovery", () => {
     });
   });
 
-  it("serves stale cache and keeps it when the auth file cannot be read", async () => {
+  // Issue #213 deliberately withholds stale quota when no key identifies it.
+  it("withholds stale cache and keeps it when the auth file cannot be read", async () => {
     const request = vi.fn();
     const remove = vi.fn();
     const report = await testAdapter({
@@ -811,13 +814,13 @@ describe("Z.AI credential discovery", () => {
 
     expect(request).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
-    expect(report.source).toBe("cache");
+    expect(report.source).toBe("unavailable");
     expect(report.state).toMatchObject({
-      status: "stale",
-      stale: true,
+      status: "error",
+      stale: false,
       error: "credential_resolution_failed",
     });
-    expect(report.windows.length).toBeGreaterThan(0);
+    expect(report.windows).toEqual([]);
     expect(report.attempts).toEqual([
       {
         source: "opencode:auth.json",
@@ -1002,6 +1005,166 @@ describe("Z.AI cache fallback", () => {
     );
     expect(atMonth.state.status).toBe("error");
     expect(atMonth.windows).toEqual([]);
+  });
+});
+
+describe("Z.AI credential-bound cache", () => {
+  let directory: string;
+  const OTHER_KEY = "synthetic-zai-key-992";
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), "quota-axi-zai-cache-"));
+    vi.stubEnv("XDG_CACHE_HOME", join(directory, "cache"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  function store(name: string, key: string): NamedZaiCredentialSource {
+    const path = join(
+      directory,
+      name === "pi:zai" ? "pi.json" : "opencode.json",
+    );
+    writeFileSync(path, JSON.stringify({ zai: { type: "api_key", key } }));
+    return {
+      name,
+      source:
+        name === "pi:zai"
+          ? createPiAuthCredentialSource(() => path)
+          : createOpencodeAuthCredentialSource(() => path),
+    };
+  }
+
+  function adapter(
+    sources: NamedZaiCredentialSource[],
+    request: typeof fetch = vi.fn(
+      async () => new Response(null, { status: 503 }),
+    ),
+  ): ProviderAdapter {
+    return createZaiAdapter({
+      credentialSources: sources,
+      fetch: request,
+      now: () => NOW,
+    });
+  }
+
+  it.each(["pi:zai", "opencode:auth.json"])(
+    "never serves account A after rotating the key in %s to account B",
+    async (name) => {
+      const logs = ["log", "warn", "error"] as const;
+      const spies = logs.map((method) =>
+        vi.spyOn(console, method).mockImplementation(() => undefined),
+      );
+      const source = store(name, SYNTHETIC_KEY);
+      const request = vi.fn(async () => jsonResponse(QUOTA_PAYLOAD));
+      const fresh = await adapter([source], request).fetchQuota(OPTIONS);
+      expect(fresh.state).toMatchObject({ status: "fresh" });
+      expect(fresh.windows.length).toBeGreaterThan(0);
+      writeCachedProviders([fresh]);
+      const before = readFileSync(cacheFilePath(), "utf8");
+
+      store(name, OTHER_KEY);
+      const rotated = await adapter([source]).fetchQuota(OPTIONS);
+      expect(rotated.source).toBe("unavailable");
+      expect(rotated.windows).toEqual([]);
+      expect(rotated.plan).toBeUndefined();
+      writeCachedProviders([rotated]);
+      expect(readFileSync(cacheFilePath(), "utf8")).toBe(before);
+
+      store(name, SYNTHETIC_KEY);
+      const sameKey = await adapter([source]).fetchQuota(OPTIONS);
+      expect(sameKey.source).toBe("cache");
+      expect(sameKey.windows).toEqual(fresh.windows);
+      const serialized = before + JSON.stringify([fresh, rotated, sameKey]);
+      for (const key of [SYNTHETIC_KEY, OTHER_KEY])
+        expect(serialized).not.toContain(key);
+      expect(spies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+    },
+  );
+
+  it.each(["pi:zai", "opencode:auth.json"])(
+    "does not borrow %s quota for a different key in the other store",
+    async (name) => {
+      const source = store(name, SYNTHETIC_KEY);
+      const fresh = await adapter(
+        [source],
+        vi.fn(async () => jsonResponse(QUOTA_PAYLOAD)),
+      ).fetchQuota(OPTIONS);
+      writeCachedProviders([fresh]);
+      const sibling = store(
+        name === "pi:zai" ? "opencode:auth.json" : "pi:zai",
+        OTHER_KEY,
+      );
+      const failed = await adapter([sibling]).fetchQuota(OPTIONS);
+      expect(failed.source).toBe("unavailable");
+      expect(failed.windows).toEqual([]);
+
+      // The same key still identifies the same account when reached through another store.
+      const sameKey = store(sibling.name, SYNTHETIC_KEY);
+      const stale = await adapter([sameKey]).fetchQuota(OPTIONS);
+      expect(stale.source).toBe("cache");
+      expect(stale.windows).toEqual(fresh.windows);
+    },
+  );
+
+  it("keeps but never serves an unidentified snapshot while the auth file is unreadable", async () => {
+    const source = store("opencode:auth.json", SYNTHETIC_KEY);
+    const fresh = await adapter(
+      [source],
+      vi.fn(async () => jsonResponse(QUOTA_PAYLOAD)),
+    ).fetchQuota(OPTIONS);
+    writeCachedProviders([fresh]);
+    const before = readFileSync(cacheFilePath(), "utf8");
+    const path = join(directory, "opencode.json");
+    rmSync(path);
+    mkdirSync(path);
+    const request = vi.fn();
+    const unreadable = await adapter([source], request).fetchQuota(OPTIONS);
+    expect(request).not.toHaveBeenCalled();
+    expect(unreadable.state).toMatchObject({
+      status: "error",
+      stale: false,
+      error: "credential_resolution_failed",
+    });
+    expect(unreadable.windows).toEqual([]);
+    writeCachedProviders([unreadable]);
+    expect(readFileSync(cacheFilePath(), "utf8")).toBe(before);
+    rmSync(path, { recursive: true });
+    store("opencode:auth.json", SYNTHETIC_KEY);
+    expect((await adapter([source]).fetchQuota(OPTIONS)).source).toBe("cache");
+  });
+
+  it("stamps the key used for the request even if its file changes before cache write", async () => {
+    const source = store("opencode:auth.json", SYNTHETIC_KEY);
+    const fresh = await adapter(
+      [source],
+      vi.fn(async () => {
+        store("opencode:auth.json", OTHER_KEY);
+        return jsonResponse(QUOTA_PAYLOAD);
+      }),
+    ).fetchQuota(OPTIONS);
+    writeCachedProviders([fresh]);
+    expect((await adapter([source]).fetchQuota(OPTIONS)).windows).toEqual([]);
+    store("opencode:auth.json", SYNTHETIC_KEY);
+    expect((await adapter([source]).fetchQuota(OPTIONS)).source).toBe("cache");
+  });
+
+  it("withholds a legacy snapshot that has no credential identity", async () => {
+    const source = store("opencode:auth.json", SYNTHETIC_KEY);
+    mkdirSync(join(directory, "cache", "quota-axi"), { recursive: true });
+    writeFileSync(
+      cacheFilePath(),
+      JSON.stringify({ schemaVersion: 3, providers: [cachedQuota()] }),
+    );
+    const failed = await adapter([source]).fetchQuota(OPTIONS);
+    expect(failed.source).toBe("unavailable");
+    expect(failed.windows).toEqual([]);
   });
 });
 

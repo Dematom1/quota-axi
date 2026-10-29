@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { copilotCacheContextId } from "../src/cache.js";
+import { zaiCacheContextId } from "../src/providers/zai-cache-context.js";
 import type { ProviderQuota, QuotaAxiResponse } from "../src/types.js";
 
 const BUILT_CLI_ENTRYPOINT = resolve("dist/bin/quota-axi.js");
@@ -160,11 +161,14 @@ function fixture(seed?: { timing: WindowTiming; refreshedAt: string }) {
             }),
             credentialContext: copilotCacheContextId("github.com"),
           },
-          snapshot("zai", "Z.AI", "api", {
-            id: "weekly",
-            label: "weekly",
-            kind: "weekly",
-          }),
+          {
+            ...snapshot("zai", "Z.AI", "api", {
+              id: "weekly",
+              label: "weekly",
+              kind: "weekly",
+            }),
+            credentialContext: zaiCacheContextId("fixture"),
+          },
         ],
       }),
     );

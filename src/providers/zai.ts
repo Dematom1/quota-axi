@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   deleteCachedProvider as deleteCachedProviderFromDisk,
-  readCachedProvider as readCachedProviderFromDisk,
+  readCachedZaiProvider as readCachedProviderFromDisk,
 } from "../cache.js";
 import { readJsonFileResult, type JsonFileReadResult } from "../lib/fs.js";
 import { providerFetch } from "../lib/http.js";
@@ -26,6 +26,10 @@ import type {
 } from "../types.js";
 import { VERSION } from "../version.js";
 import { servableStaleWindows, servableUntrustedWindowIds } from "./common.js";
+import {
+  stampZaiReadingContext,
+  zaiCacheContextId,
+} from "./zai-cache-context.js";
 
 const ZAI_QUOTA_PATH = "/api/monitor/usage/quota/limit";
 const OPERATION_DEADLINE_MS = 15_000;
@@ -265,6 +269,7 @@ async function acquireZaiQuota(
         continue;
       }
 
+      const cacheContextId = zaiCacheContextId(resolution.apiKey);
       attempts.push({ source: name, status: "failed" });
       try {
         const payload = await requestZaiQuota(
@@ -283,21 +288,24 @@ async function acquireZaiQuota(
           source: name,
           status: "success",
         };
-        return {
-          provider: "zai",
-          label: "Z.AI",
-          source: "api",
-          ...(normalized.plan ? { plan: normalized.plan } : {}),
-          windows: normalized.windows,
-          state: {
-            status: "fresh",
-            stale: false,
-            refreshedAt,
-            ...(untrustedWindowIds.length > 0 ? { untrustedWindowIds } : {}),
-            sourcesTried: attempts.map(({ source: tried }) => tried),
+        return stampZaiReadingContext(
+          {
+            provider: "zai",
+            label: "Z.AI",
+            source: "api",
+            ...(normalized.plan ? { plan: normalized.plan } : {}),
+            windows: normalized.windows,
+            state: {
+              status: "fresh",
+              stale: false,
+              refreshedAt,
+              ...(untrustedWindowIds.length > 0 ? { untrustedWindowIds } : {}),
+              sourcesTried: attempts.map(({ source: tried }) => tried),
+            },
+            attempts,
           },
-          attempts,
-        };
+          cacheContextId,
+        );
       } catch (error) {
         const failure =
           error instanceof ZaiFailure
@@ -305,6 +313,7 @@ async function acquireZaiQuota(
             : new ZaiFailure("credential_resolution_failed", {
                 staleEligible: true,
               });
+        failure.cacheContextId = cacheContextId;
         attempts[attempts.length - 1] = {
           source: name,
           status: "failed",
@@ -387,6 +396,7 @@ function failureReport(
   attempts: SourceAttempt[],
   dependencies: ZaiDependencies,
 ): ProviderQuota {
+  const cacheContextId = failure.cacheContextId;
   if (failure.definitiveAuth) {
     try {
       dependencies.deleteCachedProvider("zai");
@@ -395,9 +405,9 @@ function failureReport(
     }
   }
 
-  if (failure.staleEligible) {
+  if (failure.staleEligible && cacheContextId) {
     try {
-      const cached = dependencies.readCachedProvider("zai");
+      const cached = dependencies.readCachedProvider(cacheContextId);
       const stale = cached
         ? staleZaiReport(
             cached,
@@ -947,6 +957,9 @@ function waitForDeadline<T>(
 }
 
 class ZaiFailure extends Error {
+  // Bind a request failure to the key it tried, so a later unreadable sibling
+  // cannot inherit that identity when its local failure wins precedence.
+  cacheContextId?: string;
   readonly code: string;
   readonly status: ProviderStatus;
   readonly staleEligible: boolean;

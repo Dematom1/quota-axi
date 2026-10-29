@@ -13,6 +13,7 @@ import { devinReadingContextId } from "./providers/devin-cache-context.js";
 import { elevenLabsReadingContextId } from "./providers/elevenlabs-cache-context.js";
 import { miniMaxReadingContextId } from "./providers/minimax-cache-context.js";
 import { museReadingContextId } from "./providers/muse-cache-context.js";
+import { zaiReadingContextId } from "./providers/zai-cache-context.js";
 import { copilotGithubHost } from "./providers/copilot-host.js";
 import { isPiCodexSource } from "./providers/pi-codex-credential.js";
 import { fetchLockPath, withLockSync } from "./lib/fetch-lock.js";
@@ -77,7 +78,8 @@ const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
  * reuse - strictly for Claude, Kimi, Command Code, MiniMax, ElevenLabs, Devin,
  * and Muse, whose identity a reading always has (and which skip write and clear
  * when that identity is missing). Codex can write an unstamped snapshot, but
- * stale reuse requires a matching stored account id.
+ * stale reuse requires a matching stored account id. Z.AI likewise requires an
+ * identity, stamped on the reading from the key that actually answered.
  *
  * How that stamp is obtained is not the same question for each. A Claude
  * profile is fixed by this process's own environment, so deriving it here reads
@@ -114,6 +116,7 @@ const CONTEXT_SCOPED_PROVIDERS: Partial<
   minimax: miniMaxReadingContextId,
   muse: museReadingContextId,
   copilot: copilotReadingContextId,
+  zai: zaiReadingContextId,
 };
 
 export function copilotCacheContextId(host: string): string {
@@ -576,6 +579,13 @@ export function readCachedElevenLabsProvider(
   contextId: string,
 ): ProviderQuota | undefined {
   return readCachedProviderInContext("elevenlabs", contextId);
+}
+
+/** Z.AI stale quota belongs only to the key that produced the snapshot. */
+export function readCachedZaiProvider(
+  contextId: string,
+): ProviderQuota | undefined {
+  return readCachedProviderInContext("zai", contextId);
 }
 
 /**

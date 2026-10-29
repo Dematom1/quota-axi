@@ -23,7 +23,7 @@ This document details the disk caching architecture, file permissions, context-s
 
 To prevent cross-account or cross-environment cache poisoning, providers whose identity is configuration-dependent or slot-shared are enrolled in `CONTEXT_SCOPED_PROVIDERS` in `src/cache.ts`:
 
-- **Enrolled Providers**: Claude, Kimi, Command Code, MiniMax, ElevenLabs, Devin, Muse, and Codex.
+- **Enrolled Providers**: See `CONTEXT_SCOPED_PROVIDERS` in [`src/cache.ts`](../../src/cache.ts) for the current set.
 - **Context Identifiers**: Snapshots carry an opaque SHA-256 context identifier derived from the answering configuration:
   - **Claude**: Hashed profile and credential-storage selection. `claudeCredentialContextId` appends an env marker so environment-token readings cannot be served as stale cache for stored-token accounts.
   - **Kimi**: Home path plus the slot and base URL resolved from `config.toml` (never the file contents, which contain keys). Prevents mainland China snapshots from serving as global fallbacks.
